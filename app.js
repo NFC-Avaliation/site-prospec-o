@@ -1,3 +1,5 @@
+import { configured, setupMessage, restoreAccount, signIn, signOut, listContacts, insertContacts, changeStatus } from './contacts-store.js?v=appwrite-1';
+import { parseBackup, readLocalContacts } from './backup.js';
 import { contactsFromRows, normalize, readSheet } from './import.js';
 
 const $ = id => document.getElementById(id);
@@ -25,6 +27,12 @@ function icon(name) {
 document.querySelectorAll('[data-icon]').forEach(el => el.append(icon(el.dataset.icon).firstChild));
 
 let contacts = [];
+let owner = null;
+let accountGeneration = 0;
+let ready = false;
+let queue = Promise.resolve();
+let dragPhone = null;
+let mutationPending = false;
 let settings = {text: '', files: []};
 let draftFiles = [];
 let toastTimer;
@@ -42,15 +50,19 @@ function greeting() {
   return 'Boa noite';
 }
 
-const db = new Promise((resolve, reject) => {
-  const request = indexedDB.open('zafer-prospeccao', 1);
-  request.onupgradeneeded = () => request.result.createObjectStore('state');
-  request.onsuccess = () => resolve(request.result);
-  request.onerror = () => reject(request.error);
-  request.onblocked = () => reject(new Error('Banco ocupado'));
-});
+let settingsDb;
+function openSettingsDb() {
+  settingsDb ??= new Promise((resolve, reject) => {
+    const request = indexedDB.open('zafer-prospeccao', 1);
+    request.onupgradeneeded = () => request.result.createObjectStore('state');
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+    request.onblocked = () => reject(new Error('Banco ocupado'));
+  });
+  return settingsDb;
+}
 async function read(key) {
-  const database = await db;
+  const database = await openSettingsDb();
   return new Promise((resolve, reject) => {
     const request = database.transaction('state').objectStore('state').get(key);
     request.onsuccess = () => resolve(request.result);
@@ -58,7 +70,7 @@ async function read(key) {
   });
 }
 async function write(key, value) {
-  const database = await db;
+  const database = await openSettingsDb();
   return new Promise((resolve, reject) => {
     const transaction = database.transaction('state', 'readwrite');
     transaction.objectStore('state').put(value, key);
@@ -103,6 +115,18 @@ function formattedPhone(phone) {
 
 function contactCard(contact) {
   const card = element('article', 'card');
+  card.draggable = true;
+  card.addEventListener('dragstart', event => {
+    if (mutationPending || !ready) {
+      event.preventDefault();
+      return;
+    }
+    dragPhone = contact.phone;
+    event.dataTransfer.setData('text/plain', contact.phone);
+    event.dataTransfer.effectAllowed = 'move';
+    card.classList.add('dragging');
+  });
+  card.addEventListener('dragend', clearDrag);
   const head = element('div', 'card-heading');
   const initials = contact.name.split(/\s+/).slice(0,2).map(word => [...word][0]).join('').toLocaleUpperCase('pt-BR');
   const detail = element('div');
@@ -116,12 +140,10 @@ function contactCard(contact) {
     button('Mensagem personalizada', 'button secondary', () => openChat(contact, 'custom'), 'chat')
   );
   card.append(head, actions);
-  if (contact.sentAt) card.append(button('Voltar para A enviar', 'text-action', async () => {
-    try {
-      await updateStatus(contact.phone, null);
-      toast('Contato movido para A enviar.');
-    } catch { toast('Não foi possível alterar o status. Tente novamente.'); }
-  }));
+  const statusButton = button(contact.sentAt ? 'Voltar para A enviar' : 'Marcar como enviada',
+    'text-action status-action', () => moveContact(contact, !contact.sentAt));
+  statusButton.disabled = !ready || mutationPending;
+  card.append(statusButton);
   return card;
 }
 
@@ -148,32 +170,96 @@ function render() {
   }
 }
 
-async function changeContacts(transform) {
-  const database = await db;
-  await new Promise((resolve, reject) => {
-    const transaction = database.transaction('state', 'readwrite');
-    const state = transaction.objectStore('state');
-    const request = state.get('contacts');
-    let next, failure;
-    request.onsuccess = () => {
-      try {
-        next = transform(request.result ?? []);
-        state.put(next, 'contacts');
-      } catch (error) {
-        failure = error;
-        transaction.abort();
-      }
-    };
-    transaction.oncomplete = () => {
-      contacts = next;
-      resolve();
-    };
-    transaction.onabort = () => reject(failure ?? transaction.error);
-  });
-  render();
+function enqueue(action) {
+  const operation = queue.then(action);
+  queue = operation.catch(() => {});
+  return operation;
 }
-function updateStatus(phone, sentAt) {
-  return changeContacts(list => list.map(contact => contact.phone === phone ? {...contact, sentAt} : contact));
+
+function refreshContacts() {
+  const version = accountGeneration;
+  if (!owner) return Promise.resolve(false);
+  return enqueue(async () => {
+    if (version !== accountGeneration || dragPhone) return false;
+    try {
+      const list = await listContacts();
+      if (version !== accountGeneration || dragPhone) return false;
+      contacts = list;
+      ready = true;
+      $('import').disabled = false;
+      $('sync-status').textContent = '';
+      render();
+      return true;
+    } catch (error) {
+      if (version !== accountGeneration) return false;
+      if (error.code === 401) {
+        void switchAccount(null);
+        $('auth-status').textContent = 'Sua sessão expirou. Entre novamente.';
+      } else {
+        $('sync-status').textContent = 'Não foi possível atualizar os contatos. ';
+        $('sync-status').append(button('Tentar novamente', 'text-action', refreshContacts));
+      }
+      return false;
+    }
+  });
+}
+
+function clearDrag() {
+  dragPhone = null;
+  document.querySelectorAll('.drop-target, .dragging').forEach(element => {
+    element.classList.remove('drop-target', 'dragging');
+  });
+}
+
+for (const [id, sent] of [['pending', false], ['sent', true]]) {
+  const lane = $(id).closest('.lane');
+  lane.addEventListener('dragover', event => {
+    const contact = contacts.find(entry => entry.phone === dragPhone);
+    if (!contact || Boolean(contact.sentAt) === sent) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    lane.classList.add('drop-target');
+  });
+  lane.addEventListener('dragleave', event => {
+    if (!lane.contains(event.relatedTarget)) lane.classList.remove('drop-target');
+  });
+  lane.addEventListener('drop', event => {
+    event.preventDefault();
+    const contact = contacts.find(entry => entry.phone === dragPhone);
+    clearDrag();
+    if (contact && Boolean(contact.sentAt) !== sent) void moveContact(contact, sent);
+  });
+}
+
+async function updateStatus(phone, sentAt) {
+  if (!owner || !ready || mutationPending) return false;
+  const version = accountGeneration;
+  mutationPending = true;
+  document.querySelectorAll('.status-action').forEach(button => { button.disabled = true; });
+  try {
+    return await enqueue(async () => {
+      if (version !== accountGeneration) return false;
+      const changed = await changeStatus(phone, sentAt);
+      if (version !== accountGeneration) return false;
+      contacts = contacts.map(contact => contact.phone === changed.phone ? changed : contact);
+      return true;
+    });
+  } finally {
+    if (version === accountGeneration) {
+      mutationPending = false;
+      render();
+    }
+  }
+}
+
+async function moveContact(contact, sent) {
+  try {
+    if (await updateStatus(contact.phone, sent ? Date.now() : null)) {
+      toast(sent ? 'Contato movido para Mensagem enviada.' : 'Contato movido para A enviar.');
+    }
+  } catch {
+    toast('Não foi possível alterar o status. Tente novamente.');
+  }
 }
 
 function openEditor() {
@@ -267,30 +353,55 @@ $('import').onclick = () => {
 $('edit-message').onclick = openEditor;
 $('search').addEventListener('input', render);
 
-$('sheet').addEventListener('change', async event => {
-  const file = event.target.files[0];
-  if (!file) return;
-  event.target.disabled = true;
-  feedback('import-feedback', 'Lendo planilha…');
+const importControls = ['sheet', 'backup-file', 'migrate-local'];
+
+async function runImport(getRecords) {
+  if (!owner || !ready || $('sheet').disabled) return;
+  const version = accountGeneration;
+  importControls.forEach(key => { $(key).disabled = true; });
+  feedback('import-feedback', 'Importando contatos…');
   try {
-    const rows = await readSheet(file);
-    let result;
-    await changeContacts(list => {
-      result = contactsFromRows(rows, list);
-      return [...list, ...result.added];
+    const { added, duplicates, invalid } = await getRecords();
+    const inserted = await enqueue(async () => {
+      if (version !== accountGeneration) return 0;
+      return insertContacts(added);
     });
+    if (version !== accountGeneration) return;
+    const skipped = duplicates + added.length - inserted;
     feedback('import-feedback', [
-      result.added.length + ' contato(s) importado(s).',
-      result.duplicates ? result.duplicates + ' duplicado(s) ignorado(s).' : '',
-      result.invalid ? result.invalid + ' linha(s) ignorada(s) por falta de nome ou telefone válido com DDD.' : ''
+      inserted + ' contato(s) importado(s).',
+      skipped ? skipped + ' duplicado(s) ignorado(s).' : '',
+      invalid ? invalid + ' linha(s) sem nome ou telefone válido com DDD.' : ''
     ].filter(Boolean).join('\n'));
   } catch (error) {
-    feedback('import-feedback', error instanceof Error ? error.message : 'Não foi possível importar a planilha.', true);
+    if (version === accountGeneration) feedback('import-feedback', error.message || 'Não foi possível importar.', true);
   } finally {
-    event.target.disabled = false;
-    event.target.value = '';
+    if (version === accountGeneration) {
+      importControls.forEach(key => { $(key).disabled = false; });
+      await refreshContacts();
+    }
   }
+}
+
+$('sheet').addEventListener('change', async event => {
+  const file = event.target.files[0];
+  event.target.value = '';
+  if (file) await runImport(async () => contactsFromRows(await readSheet(file), []));
 });
+
+function backupRecords(backup) {
+  return { added: parseBackup(backup), duplicates: 0, invalid: 0 };
+}
+
+$('backup-file').addEventListener('change', async event => {
+  const file = event.target.files[0];
+  event.target.value = '';
+  if (file) await runImport(async () => backupRecords(JSON.parse(await file.text())));
+});
+
+$('migrate-local').onclick = () => runImport(async () => backupRecords({
+  format: 'prospeccao-marcelo', version: 1, contacts: await readLocalContacts()
+}));
 
 $('media-input').addEventListener('change', event => {
   const picked = Array.from(event.target.files);
@@ -318,7 +429,7 @@ $('confirm-send').onclick = async () => {
   if (!contact) return;
   $('confirm-send').disabled = true;
   try {
-    await updateStatus(contact.phone, Date.now());
+    if (!await updateStatus(contact.phone, Date.now())) return;
     $('send-dialog').close();
     toast('Envio registrado para ' + contact.name + '.');
   } catch {
@@ -326,13 +437,81 @@ $('confirm-send').onclick = async () => {
   } finally { $('confirm-send').disabled = false; }
 };
 
-$('import').disabled = $('edit-message').disabled = true;
-try {
-  const [savedContacts, savedSettings] = await Promise.all([read('contacts'), read('settings')]);
-  contacts = savedContacts ?? contacts;
-  settings = savedSettings ?? settings;
-  $('import').disabled = $('edit-message').disabled = false;
-} catch {
-  toast('O navegador bloqueou o armazenamento. Abra a página em uma janela normal e tente novamente.', true);
+async function switchAccount(id) {
+  if (id === owner && !$('auth-panel').hidden && !id) {
+    $('auth-status').textContent = '';
+    return;
+  }
+  if (id && id === owner) return;
+
+  accountGeneration += 1;
+  const version = accountGeneration;
+  owner = id;
+  ready = false;
+  mutationPending = false;
+  contacts = [];
+  activeSend = null;
+  clearDrag();
+  document.querySelectorAll('dialog[open]').forEach(dialog => dialog.close());
+  $('search').value = '';
+  $('toast').hidden = true;
+  $('auth-panel').hidden = Boolean(id);
+  $('workspace').hidden = !id;
+  $('auth-status').textContent = '';
+  $('import').disabled = true;
+  importControls.forEach(key => { $(key).disabled = false; });
+  $('migrate-local').hidden = true;
+  render();
+  if (!id) return;
+
+  $('sync-status').textContent = 'Carregando contatos…';
+  void refreshContacts();
+  try {
+    const local = await readLocalContacts();
+    if (version === accountGeneration) $('migrate-local').hidden = local.length === 0;
+  } catch {
+    // The cloud list works even when the local browser database is unavailable.
+  }
 }
-render();
+
+if (!configured) {
+  $('auth-status').textContent = setupMessage;
+} else {
+  $('login-form').hidden = false;
+  $('login').disabled = true;
+  restoreAccount().then(switchAccount).catch(() => {
+    $('auth-status').textContent = 'Não foi possível verificar a sessão. Você pode tentar entrar novamente.';
+  }).finally(() => { $('login').disabled = false; });
+  $('login-form').onsubmit = async event => {
+    event.preventDefault();
+    $('login').disabled = true;
+    $('auth-status').textContent = 'Entrando…';
+    try {
+      const id = await signIn($('email').value.trim(), $('password').value);
+      await switchAccount(id);
+    } catch {
+      $('auth-status').textContent = 'Não foi possível entrar. Confira seu e-mail, a senha e a conexão.';
+    } finally {
+      $('password').value = '';
+      $('login').disabled = false;
+    }
+  };
+  $('sign-out').onclick = async () => {
+    $('sign-out').disabled = true;
+    try {
+      await signOut();
+      await switchAccount(null);
+    } catch { toast('Não foi possível sair. Tente novamente.'); }
+    finally { $('sign-out').disabled = false; }
+  };
+  window.addEventListener('focus', () => { void refreshContacts(); });
+  setInterval(() => { if (!document.hidden) void refreshContacts(); }, 30000);
+}
+
+$('edit-message').disabled = true;
+try {
+  settings = await read('settings') ?? settings;
+  $('edit-message').disabled = false;
+} catch {
+  $('edit-message').title = 'O armazenamento de mensagens neste navegador está indisponível.';
+}

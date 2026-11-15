@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Exportar contatos antigos</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main>
+    <h1>Exportar contatos antigos</h1>
+    <p>Use o navegador em que você importou os contatos. O backup inclui as duas colunas e as datas de envio.</p>
+    <button type="button" class="button primary" id="download">Baixar backup dos contatos</button>
+    <p role="status" id="result"></p>
+  </main>
+  <script type="module">
+    import { readLocalContacts } from './backup.js';
+    const button = document.getElementById('download');
+    const status = document.getElementById('result');
+    button.onclick = async () => {
+      button.disabled = true;
+      try {
+        const contacts = await readLocalContacts();
+        if (!contacts.length) {
+          status.textContent = 'Nenhum contato antigo foi encontrado neste navegador.';
+          return;
+        }
+        const backup = JSON.stringify({ format: 'prospeccao-marcelo', version: 1, contacts });
+        const url = URL.createObjectURL(new Blob([backup], { type: 'application/json' }));
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = 'backup-contatos-prospeccao.json';
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 30000);
+        status.textContent = contacts.length + ' contato(s) incluído(s) no backup.';
+      } catch {
+        status.textContent = 'Não foi possível abrir a lista deste navegador.';
+      } finally {
+        button.disabled = false;
+      }
+    };
+  </script>
+</body>
+</html>

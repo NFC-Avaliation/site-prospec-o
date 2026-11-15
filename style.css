@@ -55,3 +55,38 @@ dialog .drop:hover {
 dialog .feedback.error {
   color: #ffbdb6;
 }
+
+.auth-panel {
+  width: min(430px, calc(100% - 32px));
+  margin: clamp(36px, 11vh, 100px) auto 0;
+  background: #fff;
+  padding: 26px;
+  border: 1px solid var(--border);
+  border-radius: 15px;
+}
+.auth-panel h1 { font-size: clamp(25px, 5vw, 34px); }
+.auth-panel form, .auth-panel label { display: grid; gap: 8px; }
+.auth-panel form { gap: 14px; }
+.auth-panel label { font-size: 14px; font-weight: 650; }
+.auth-panel input {
+  width: 100%;
+  min-height: 42px;
+  padding: 8px 10px;
+  color: #192638;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+#auth-status:empty, #sync-status:empty { display: none; }
+.account-actions { display: flex; flex-wrap: wrap; justify-content: end; gap: 6px; }
+.board-hint, #sync-status { font-size: 13px; margin: 0 0 12px; }
+#sync-status .text-action { padding: 0; }
+.lane.drop-target { outline: 2px dashed var(--blue); outline-offset: -3px; background: #e3eaff; }
+.card[draggable] .card-heading { cursor: grab; }
+.card.dragging { opacity: .55; }
+#import-dialog .file-button, #migrate-local { margin-top: 8px; }
+@media(max-width:420px) {
+  .account-actions .button { padding: 6px 9px; min-height: 35px; font-size: 12px; }
+  .account-actions .button svg { display: none; }
+  .top-inner { padding: 8px 12px; }
+}
