@@ -196,6 +196,27 @@ function renderDraft() {
   }));
 }
 
+function requestWhatsAppTab(url) {
+  const event = new CustomEvent('marcelo-prospeccao:abrir-whatsapp', {
+    detail: url,
+    cancelable: true
+  });
+  return !window.dispatchEvent(event);
+}
+
+let whatsappExtensionFailed = false;
+
+window.addEventListener('marcelo-prospeccao:erro-whatsapp', event => {
+  if (!$('send-dialog').open || $('reopen').href !== event.detail) return;
+  whatsappExtensionFailed = true;
+  feedback('send-feedback', 'A extensão não conseguiu abrir a conversa. Clique em Abrir WhatsApp Web para abrir uma nova aba.', true);
+});
+
+$('reopen').addEventListener('click', event => {
+  if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+  if (!whatsappExtensionFailed && requestWhatsAppTab(event.currentTarget.href)) event.preventDefault();
+});
+
 function openChat(contact, type) {
   const custom = type === 'custom';
   if (custom && !settings.text && !settings.files.length) {
@@ -210,7 +231,6 @@ function openChat(contact, type) {
   const url = new URL('https://web.whatsapp.com/send');
   url.searchParams.set('phone', contact.phone);
   if (text) url.searchParams.set('text', text);
-  window.open(url.href, '_blank', 'noopener,noreferrer');
   $('reopen').href = url.href;
   activeSend = contact;
   $('send-description').textContent = 'Depois de enviar a mensagem para ' + contact.name + ' no WhatsApp Web, confirme o envio aqui.';
@@ -229,6 +249,9 @@ function openChat(contact, type) {
   }));
   feedback('send-feedback', '');
   $('send-dialog').showModal();
+  if (whatsappExtensionFailed || !requestWhatsAppTab(url.href)) {
+    window.open(url.href, '_blank', 'noopener,noreferrer');
+  }
 }
 
 $('send-dialog').addEventListener('close', () => {
