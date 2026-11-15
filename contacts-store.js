@@ -53,7 +53,7 @@ export async function signOut() {
   }
 }
 
-const address = { databaseId: 'prospeccao', tableId: 'contatos' };
+const address = { databaseId: 'prospecca', tableId: '6afa2da80026e5b19f37' };
 const pageSize = 100;
 const asContact = row => ({
   phone: row.$id,
