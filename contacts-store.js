@@ -54,7 +54,7 @@ export async function signOut() {
 }
 
 const address = { databaseId: 'prospecca', tableId: '6afa2da80026e5b19f37' };
-const template = { databaseId: address.databaseId, tableId: 'mensagens', rowId: 'personalizada' };
+const template = { databaseId: address.databaseId, tableId: '6afa49a00027e5dccc40', rowId: 'personalizada' };
 const pageSize = 100;
 const isoDate = value => value ? new Date(value).toISOString() : null;
 const asContact = row => ({
