@@ -1,9 +1,10 @@
-import { configured, setupMessage, restoreAccount, signIn, signOut, listContacts, insertContacts, changeStatus } from './contacts-store.js?v=appwrite-1';
-import { parseBackup, readLocalContacts } from './backup.js';
-import { contactsFromRows, normalize, readSheet } from './import.js';
+import { configured, setupMessage, restoreAccount, signIn, signOut, listContacts, insertContacts, createContact, changeStatus, readTemplate, saveTemplate } from './contacts-store.js?v=etapas-1';
+import { parseBackup, readLocalContacts } from './backup.js?v=etapas-1';
+import { brazilianPhone, contactsFromRows, normalize, readSheet } from './import.js';
 
 const $ = id => document.getElementById(id);
 const icons = {
+  plus:'<path d="M12 5v14M5 12h14"/>',
   edit:'<path d="m16 4 4 4M4 20l4-.9L20 7a2.8 2.8 0 0 0-4-4L4 15z"/>',
   upload:'<path d="M12 16V4m-5 5 5-5 5 5M4 16v4h16v-4"/>',
   download:'<path d="M12 4v12m-5-5 5 5 5-5M4 17v3h16v-3"/>',
@@ -37,6 +38,15 @@ let settings = {text: '', files: []};
 let draftFiles = [];
 let toastTimer;
 let activeSend = null;
+let cloudText = null;
+let templateReady = false;
+const messageText = () => cloudText ?? settings.text;
+const stages = {
+  pending: 'A enviar',
+  welcome: 'Boas-vindas enviado',
+  sent: 'Mensagem enviada'
+};
+const stageOf = contact => contact.sentAt ? 'sent' : contact.welcomedAt ? 'welcome' : 'pending';
 let downloadUrls = [];
 
 const timeZone = 'America/Sao_Paulo';
@@ -131,7 +141,8 @@ function contactCard(contact) {
   const initials = contact.name.split(/\s+/).slice(0,2).map(word => [...word][0]).join('').toLocaleUpperCase('pt-BR');
   const detail = element('div');
   detail.append(element('h3', '', contact.name), element('span', 'phone', formattedPhone(contact.phone)));
-  if (contact.sentAt) detail.append(element('span', 'date', 'Enviada em ' + dateFormat.format(new Date(contact.sentAt))));
+  const registeredAt = contact.sentAt || contact.welcomedAt;
+  if (registeredAt) detail.append(element('span', 'date', 'Registrado em ' + dateFormat.format(new Date(registeredAt))));
   head.append(element('span', 'avatar', initials), detail);
   head.firstChild.setAttribute('aria-hidden', 'true');
   const actions = element('div', 'card-actions');
@@ -140,10 +151,17 @@ function contactCard(contact) {
     button('Mensagem personalizada', 'button secondary', () => openChat(contact, 'custom'), 'chat')
   );
   card.append(head, actions);
-  const statusButton = button(contact.sentAt ? 'Voltar para A enviar' : 'Marcar como enviada',
-    'text-action status-action', () => moveContact(contact, !contact.sentAt));
-  statusButton.disabled = !ready || mutationPending;
-  card.append(statusButton);
+  const statusSelect = element('select', 'status-action');
+  statusSelect.setAttribute('aria-label', 'Etapa de ' + contact.name);
+  for (const [stage, label] of Object.entries(stages)) {
+    const option = element('option', '', label);
+    option.value = stage;
+    statusSelect.append(option);
+  }
+  statusSelect.value = stageOf(contact);
+  statusSelect.disabled = !ready || mutationPending;
+  statusSelect.addEventListener('change', () => moveContact(contact, statusSelect.value));
+  card.append(statusSelect);
   return card;
 }
 
@@ -152,19 +170,20 @@ function render() {
   const digits = query.replace(/\D/g, '');
   const matches = contact => !query || normalize(contact.name).includes(query) || (digits && /^[\d\s+().-]+$/.test(query) && contact.phone.includes(digits));
   $('total').textContent = contacts.length;
-  for (const [id, sent, title, help] of [
-    ['pending', false, 'Nenhum contato a enviar', 'Importe uma planilha para adicionar seus contatos.'],
-    ['sent', true, 'Nenhuma mensagem confirmada', 'Os contatos aparecem aqui quando você confirma o envio.']
+  for (const [id, title, help] of [
+    ['pending', 'Nenhum contato a enviar', 'Adicione um contato ou importe uma planilha.'],
+    ['welcome', 'Nenhuma saudação registrada', 'Os contatos aparecem aqui ao usar o botão Boas-vindas.'],
+    ['sent', 'Nenhuma mensagem registrada', 'Os contatos aparecem aqui ao usar Mensagem personalizada.']
   ]) {
-    const list = contacts.filter(contact => Boolean(contact.sentAt) === sent);
-    if (sent) list.sort((a, b) => b.sentAt - a.sentAt);
+    const list = contacts.filter(contact => stageOf(contact) === id);
+    if (id !== 'pending') list.sort((a, b) => (b.sentAt || b.welcomedAt) - (a.sentAt || a.welcomedAt));
     $(id + '-count').textContent = list.length;
     $(id + '-pill').textContent = list.length;
     const visible = list.filter(matches);
     if (visible.length) $(id).replaceChildren(...visible.map(contactCard));
     else {
       const empty = element('div', 'empty');
-      empty.append(icon(sent ? 'check' : 'inbox'), element('strong', '', query ? 'Nenhum resultado' : title), element('p', '', query ? 'Tente buscar outro nome ou telefone.' : help));
+      empty.append(icon(id === 'sent' ? 'check' : id === 'welcome' ? 'chat' : 'inbox'), element('strong', '', query ? 'Nenhum resultado' : title), element('p', '', query ? 'Tente buscar outro nome ou telefone.' : help));
       $(id).replaceChildren(empty);
     }
   }
@@ -186,7 +205,7 @@ function refreshContacts() {
       if (version !== accountGeneration || dragPhone) return false;
       contacts = list;
       ready = true;
-      $('import').disabled = false;
+      $('import').disabled = $('add-contact').disabled = false;
       $('sync-status').textContent = '';
       render();
       return true;
@@ -211,11 +230,11 @@ function clearDrag() {
   });
 }
 
-for (const [id, sent] of [['pending', false], ['sent', true]]) {
+for (const id of Object.keys(stages)) {
   const lane = $(id).closest('.lane');
   lane.addEventListener('dragover', event => {
     const contact = contacts.find(entry => entry.phone === dragPhone);
-    if (!contact || Boolean(contact.sentAt) === sent) return;
+    if (!contact || stageOf(contact) === id) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = 'move';
     lane.classList.add('drop-target');
@@ -227,11 +246,11 @@ for (const [id, sent] of [['pending', false], ['sent', true]]) {
     event.preventDefault();
     const contact = contacts.find(entry => entry.phone === dragPhone);
     clearDrag();
-    if (contact && Boolean(contact.sentAt) !== sent) void moveContact(contact, sent);
+    if (contact && stageOf(contact) !== id) void moveContact(contact, id);
   });
 }
 
-async function updateStatus(phone, sentAt) {
+async function updateStatus(phone, stage) {
   if (!owner || !ready || mutationPending) return false;
   const version = accountGeneration;
   mutationPending = true;
@@ -239,7 +258,7 @@ async function updateStatus(phone, sentAt) {
   try {
     return await enqueue(async () => {
       if (version !== accountGeneration) return false;
-      const changed = await changeStatus(phone, sentAt);
+      const changed = await changeStatus(phone, stage);
       if (version !== accountGeneration) return false;
       contacts = contacts.map(contact => contact.phone === changed.phone ? changed : contact);
       return true;
@@ -252,18 +271,38 @@ async function updateStatus(phone, sentAt) {
   }
 }
 
-async function moveContact(contact, sent) {
+async function moveContact(contact, stage) {
   try {
-    if (await updateStatus(contact.phone, sent ? Date.now() : null)) {
-      toast(sent ? 'Contato movido para Mensagem enviada.' : 'Contato movido para A enviar.');
+    if (await updateStatus(contact.phone, stage)) {
+      toast('Contato movido para ' + stages[stage] + '.');
     }
   } catch {
     toast('Não foi possível alterar o status. Tente novamente.');
   }
 }
 
+function refreshTemplate() {
+  const version = accountGeneration;
+  if (!owner) return;
+  return enqueue(async () => {
+    if (version !== accountGeneration) return;
+    try {
+      const text = await readTemplate();
+      if (version === accountGeneration) cloudText = text;
+    } catch {
+      // Keep the last loaded text. The editor can retry saving if the service is unavailable.
+    } finally {
+      if (version === accountGeneration) templateReady = true;
+    }
+  });
+}
+
 function openEditor() {
-  $('message').value = settings.text;
+  if (!templateReady) {
+    toast('Aguarde o carregamento da mensagem personalizada.');
+    return;
+  }
+  $('message').value = messageText();
   draftFiles = [...settings.files];
   $('media-input').value = '';
   feedback('message-feedback', '');
@@ -304,22 +343,30 @@ $('reopen').addEventListener('click', event => {
 });
 
 function openChat(contact, type) {
+  if (!ready || mutationPending) {
+    toast('Aguarde o salvamento da etapa anterior.');
+    return;
+  }
   const custom = type === 'custom';
-  if (custom && !settings.text && !settings.files.length) {
+  if (custom && !templateReady) {
+    toast('Aguarde o carregamento da mensagem personalizada.');
+    return;
+  }
+  if (custom && !messageText() && !settings.files.length) {
     openEditor();
     feedback('message-feedback', 'Salve sua mensagem para abrir a conversa com este contato.');
     return;
   }
   const salutation = greeting();
   const text = custom
-    ? settings.text.replace(/\{nome\}|\{saudacao\}/g, field => field === '{nome}' ? contact.name : salutation)
+    ? messageText().replace(/\{nome\}|\{saudacao\}/g, field => field === '{nome}' ? contact.name : salutation)
     : salutation + ', tudo bem?';
   const url = new URL('https://web.whatsapp.com/send');
   url.searchParams.set('phone', contact.phone);
   if (text) url.searchParams.set('text', text);
   $('reopen').href = url.href;
-  activeSend = contact;
-  $('send-description').textContent = 'Depois de enviar a mensagem para ' + contact.name + ' no WhatsApp Web, confirme o envio aqui.';
+  activeSend = { phone: contact.phone, stage: custom ? 'sent' : 'welcome' };
+  $('send-description').textContent = 'Revise a mensagem para ' + contact.name + ' e clique em Enviar dentro do WhatsApp Web.';
   const files = custom ? settings.files : [];
   $('send-media-area').hidden = !files.length;
   $('send-media').replaceChildren(...files.map(file => {
@@ -338,8 +385,27 @@ function openChat(contact, type) {
   if (whatsappExtensionFailed || !requestWhatsAppTab(url.href)) {
     window.open(url.href, '_blank', 'noopener,noreferrer');
   }
+  void saveChatStage(activeSend);
 }
 
+async function saveChatStage(attempt) {
+  if (!attempt) return;
+  $('retry-stage').hidden = true;
+  feedback('stage-feedback', 'Salvando etapa…');
+  try {
+    if (!await updateStatus(attempt.phone, attempt.stage)) return;
+    if (activeSend === attempt) feedback('stage-feedback', 'Contato movido para ' + stages[attempt.stage] + '.');
+  } catch {
+    if (activeSend === attempt && $('send-dialog').open) {
+      feedback('stage-feedback', 'Não foi possível salvar a etapa.', true);
+      $('retry-stage').hidden = false;
+    } else {
+      toast('Não foi possível salvar a etapa do contato. Tente mover pelo cartão.');
+    }
+  }
+}
+
+$('retry-stage').onclick = () => saveChatStage(activeSend);
 $('send-dialog').addEventListener('close', () => {
   downloadUrls.forEach(url => URL.revokeObjectURL(url));
   downloadUrls = [];
@@ -352,6 +418,46 @@ $('import').onclick = () => {
 };
 $('edit-message').onclick = openEditor;
 $('search').addEventListener('input', render);
+$('add-contact').onclick = () => {
+  $('contact-form').reset();
+  feedback('contact-feedback', '');
+  $('contact-dialog').showModal();
+};
+$('contact-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  if (!owner || !ready || $('save-contact').disabled) return;
+  const name = $('contact-name').value.trim();
+  const phone = brazilianPhone($('contact-phone').value);
+  if (!name || !phone) {
+    feedback('contact-feedback', 'Preencha o nome e um número brasileiro com DDD.', true);
+    return;
+  }
+  const version = accountGeneration;
+  const record = { name, phone, sentAt: null, welcomedAt: null };
+  $('save-contact').disabled = true;
+  try {
+    const saved = await enqueue(async () => {
+      if (version !== accountGeneration) return false;
+      const inserted = await createContact(record);
+      if (!inserted || version !== accountGeneration) return false;
+      contacts = [...contacts.filter(contact => contact.phone !== phone), record];
+      render();
+      return true;
+    });
+    if (version !== accountGeneration) return;
+    if (!saved) {
+      feedback('contact-feedback', 'Já existe um contato com esse WhatsApp.', true);
+      void refreshContacts();
+      return;
+    }
+    $('contact-dialog').close();
+    toast('Contato adicionado em A enviar.');
+  } catch {
+    if (version === accountGeneration) feedback('contact-feedback', 'Não foi possível cadastrar o contato. Tente novamente.', true);
+  } finally {
+    $('save-contact').disabled = false;
+  }
+});
 
 const importControls = ['sheet', 'backup-file', 'migrate-local'];
 
@@ -413,29 +519,42 @@ $('media-input').addEventListener('change', event => {
 });
 $('message-form').addEventListener('submit', async event => {
   event.preventDefault();
-  const next = {text: $('message').value.trim(), files: [...draftFiles]};
+  if (!owner || $('save-message').disabled) return;
+  const version = accountGeneration;
+  const next = { text: $('message').value.trim(), files: [...draftFiles] };
   $('save-message').disabled = true;
   try {
-    await write('settings', next);
-    settings = next;
-    $('message-dialog').close();
-    toast('Mensagem personalizada salva.');
+    await enqueue(async () => {
+      if (version !== accountGeneration) return;
+      await saveTemplate(next.text);
+      if (version === accountGeneration) cloudText = next.text;
+    });
   } catch {
-    feedback('message-feedback', 'Não foi possível salvar. Confira o espaço disponível no navegador e tente novamente.', true);
-  } finally { $('save-message').disabled = false; }
-});
-$('confirm-send').onclick = async () => {
-  const contact = activeSend;
-  if (!contact) return;
-  $('confirm-send').disabled = true;
+    if (version === accountGeneration) {
+      feedback('message-feedback', 'Não foi possível salvar no Appwrite. Confira a tabela mensagens e suas permissões.', true);
+    }
+    $('save-message').disabled = false;
+    return;
+  }
+  if (version !== accountGeneration) {
+    $('save-message').disabled = false;
+    return;
+  }
+  settings = next;
   try {
-    if (!await updateStatus(contact.phone, Date.now())) return;
-    $('send-dialog').close();
-    toast('Envio registrado para ' + contact.name + '.');
+    await write('settings', next);
+    if (version === accountGeneration) {
+      $('message-dialog').close();
+      toast('Mensagem salva na sua conta.');
+    }
   } catch {
-    feedback('send-feedback', 'Não foi possível registrar o envio. Tente novamente.', true);
-  } finally { $('confirm-send').disabled = false; }
-};
+    if (version === accountGeneration) {
+      feedback('message-feedback', 'O texto foi salvo na sua conta. Os anexos não puderam ser gravados neste navegador.', true);
+    }
+  } finally {
+    $('save-message').disabled = false;
+  }
+});
 
 async function switchAccount(id) {
   if (id === owner && !$('auth-panel').hidden && !id) {
@@ -451,6 +570,8 @@ async function switchAccount(id) {
   mutationPending = false;
   contacts = [];
   activeSend = null;
+  cloudText = null;
+  templateReady = false;
   clearDrag();
   document.querySelectorAll('dialog[open]').forEach(dialog => dialog.close());
   $('search').value = '';
@@ -458,7 +579,7 @@ async function switchAccount(id) {
   $('auth-panel').hidden = Boolean(id);
   $('workspace').hidden = !id;
   $('auth-status').textContent = '';
-  $('import').disabled = true;
+  $('import').disabled = $('add-contact').disabled = true;
   importControls.forEach(key => { $(key).disabled = false; });
   $('migrate-local').hidden = true;
   render();
@@ -466,6 +587,7 @@ async function switchAccount(id) {
 
   $('sync-status').textContent = 'Carregando contatos…';
   void refreshContacts();
+  void refreshTemplate();
   try {
     const local = await readLocalContacts();
     if (version === accountGeneration) $('migrate-local').hidden = local.length === 0;
@@ -504,14 +626,13 @@ if (!configured) {
     } catch { toast('Não foi possível sair. Tente novamente.'); }
     finally { $('sign-out').disabled = false; }
   };
-  window.addEventListener('focus', () => { void refreshContacts(); });
-  setInterval(() => { if (!document.hidden) void refreshContacts(); }, 30000);
+  const refreshAccount = () => { void refreshContacts(); void refreshTemplate(); };
+  window.addEventListener('focus', refreshAccount);
+  setInterval(() => { if (!document.hidden) refreshAccount(); }, 30000);
 }
 
-$('edit-message').disabled = true;
 try {
   settings = await read('settings') ?? settings;
-  $('edit-message').disabled = false;
 } catch {
-  $('edit-message').title = 'O armazenamento de mensagens neste navegador está indisponível.';
+  // The text in Appwrite is available even when local attachment storage is blocked.
 }

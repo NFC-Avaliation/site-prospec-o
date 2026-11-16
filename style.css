@@ -90,3 +90,13 @@ dialog .feedback.error {
   .account-actions .button svg { display: none; }
   .top-inner { padding: 8px 12px; }
 }
+
+.intro-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.overview { grid-template-columns: repeat(4,minmax(0,1fr)); }
+.board { grid-template-columns: repeat(3,minmax(0,1fr)); }
+.status-action { background: #f5f7fa; border: 1px solid var(--border); border-radius: 7px; color: #263852; display: block; font: inherit; font-size: 12px; margin-top: 10px; max-width: 100%; padding: 6px 7px; }
+#contact-form input { background: #1b2028; border: 1px solid var(--border); border-radius: 8px; color: #fff; display: block; min-height: 42px; padding: 8px 10px; width: 100%; }
+#contact-form input::placeholder { color: #d0d7e2; }
+#contact-form .field-label:not(:first-of-type) { margin-top: 12px; }
+@media (max-width: 915px) { .board { grid-template-columns: 1fr; } }
+@media (max-width: 620px) { .overview { grid-template-columns: repeat(2,minmax(0,1fr)); } }

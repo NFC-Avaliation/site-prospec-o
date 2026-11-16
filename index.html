@@ -5,10 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="description" content="Painel de prospecção do Marcelo. Organize seus contatos e prepare mensagens para o WhatsApp Web.">
 <title>Prospecção Marcelo</title>
-<link rel="stylesheet" href="style.css?v=cloud-1">
+<link rel="stylesheet" href="style.css?v=etapas-1">
 <script src="jszip.min.js" defer></script>
 <script src="appwrite-client.js" defer></script>
-<script type="module" src="app.js?v=appwrite-1"></script>
+<script type="module" src="app.js?v=etapas-1"></script>
 </head>
 <body>
 <section id="auth-panel" class="auth-panel" aria-labelledby="auth-title">
@@ -29,29 +29,37 @@
 <main>
   <section class="intro">
     <div><h1>Contatos de prospecção</h1><p>Organize sua lista e prepare suas abordagens pelo WhatsApp Web.</p></div>
-    <button class="button primary" id="import"><span data-icon="upload"></span> Importar planilha</button>
+    <div class="intro-actions">
+      <button type="button" class="button secondary" id="import"><span data-icon="upload"></span> Importar planilha</button>
+      <button type="button" class="button primary" id="add-contact"><span data-icon="plus"></span> Adicionar contato</button>
+    </div>
   </section>
   <section class="overview" aria-label="Resumo de contatos">
     <div class="metric"><span class="metric-icon blue" data-icon="users"></span><div><small>Total de contatos</small><strong id="total">0</strong></div></div>
     <div class="metric"><span class="metric-icon amber" data-icon="clock"></span><div><small>A enviar</small><strong id="pending-count">0</strong></div></div>
+    <div class="metric"><span class="metric-icon blue" data-icon="chat"></span><div><small>Boas-vindas enviado</small><strong id="welcome-count">0</strong></div></div>
     <div class="metric"><span class="metric-icon green" data-icon="check"></span><div><small>Mensagem enviada</small><strong id="sent-count">0</strong></div></div>
   </section>
   <div class="toolbar">
     <label class="search"><span data-icon="search"></span><input id="search" type="search" placeholder="Buscar por nome ou telefone" aria-label="Buscar por nome ou telefone"></label>
     <a class="text-action" href="modelo-contatos.csv" download><span data-icon="download"></span> Baixar modelo de planilha</a>
   </div>
-  <p class="board-hint">Arraste um contato para a outra coluna ou use o botão de status no cartão.</p><p id="sync-status" role="status"></p>
+  <p class="board-hint">Arraste um contato para a outra coluna ou escolha a etapa no cartão.</p><p id="sync-status" role="status"></p>
   <div class="board">
     <section class="lane" aria-labelledby="pending-title">
       <header><span class="dot amber"></span><h2 id="pending-title">A enviar</h2><span id="pending-pill" class="pill">0</span></header>
       <div class="entries" id="pending"></div>
+    </section>
+    <section class="lane" aria-labelledby="welcome-title">
+      <header><span class="dot blue"></span><h2 id="welcome-title">Boas-vindas enviado</h2><span id="welcome-pill" class="pill">0</span></header>
+      <div class="entries" id="welcome"></div>
     </section>
     <section class="lane" aria-labelledby="sent-title">
       <header><span class="dot green"></span><h2 id="sent-title">Mensagem enviada</h2><span id="sent-pill" class="pill">0</span></header>
       <div class="entries" id="sent"></div>
     </section>
   </div>
-  <p class="foot"><span data-icon="lock"></span> Os contatos e os status ficam salvos na sua conta. A mensagem personalizada e as mídias ficam neste navegador.</p>
+  <p class="foot"><span data-icon="lock"></span> Os contatos, as etapas e o texto personalizado ficam salvos na sua conta. As mídias ficam neste navegador.</p>
 </main>
 </div>
 <dialog id="import-dialog" aria-labelledby="import-title">
@@ -62,6 +70,17 @@
   <button type="button" class="button secondary" id="migrate-local" hidden>Importar lista deste navegador</button>
   <p class="feedback" id="import-feedback" role="status"></p>
   <div class="dialog-actions"><a class="text-action" href="modelo-contatos.csv" download><span data-icon="download"></span> Baixar modelo</a><button type="button" class="button secondary close">Fechar</button></div>
+</dialog>
+<dialog id="contact-dialog" aria-labelledby="contact-title">
+  <form id="contact-form">
+    <div class="dialog-head"><h2 id="contact-title">Adicionar contato</h2><button class="icon-button close" type="button" aria-label="Fechar"><span data-icon="close"></span></button></div>
+    <label class="field-label" for="contact-name">Nome</label>
+    <input id="contact-name" type="text" maxlength="1024" autocomplete="off" required>
+    <label class="field-label" for="contact-phone">WhatsApp com DDD</label>
+    <input id="contact-phone" type="tel" placeholder="(47) 99999-9999" autocomplete="off" required>
+    <p class="feedback" id="contact-feedback" role="status"></p>
+    <div class="dialog-actions right"><button type="button" class="button secondary close">Cancelar</button><button type="submit" class="button primary" id="save-contact">Salvar contato</button></div>
+  </form>
 </dialog>
 <dialog id="message-dialog" aria-labelledby="message-title">
   <form id="message-form">
@@ -77,11 +96,13 @@
   </form>
 </dialog>
 <dialog id="send-dialog" aria-labelledby="send-title">
-  <div class="dialog-head"><h2 id="send-title">Confirmar envio</h2><button class="icon-button close" type="button" aria-label="Fechar"><span data-icon="close"></span></button></div>
+  <div class="dialog-head"><h2 id="send-title">Conversa no WhatsApp</h2><button class="icon-button close" type="button" aria-label="Fechar"><span data-icon="close"></span></button></div>
   <p id="send-description"></p>
   <div id="send-media-area" hidden><p class="hint">Baixe os arquivos abaixo. Na conversa, clique em <strong>+</strong> e selecione <strong>Fotos e vídeos</strong> para anexá-los.</p><ul id="send-media" class="media-list"></ul></div>
+  <p id="stage-feedback" role="status" class="feedback"></p>
+  <button type="button" id="retry-stage" class="text-action" hidden>Tentar salvar etapa novamente</button>
   <p id="send-feedback" class="feedback" role="status"></p>
-  <div class="dialog-actions"><a class="text-action" id="reopen" target="_blank" rel="noopener noreferrer">Abrir WhatsApp Web <span data-icon="external"></span></a><button type="button" class="button primary" id="confirm-send"><span data-icon="check"></span> Marcar como enviada</button></div>
+  <div class="dialog-actions"><a class="text-action" id="reopen" target="_blank" rel="noopener noreferrer">Abrir WhatsApp Web <span data-icon="external"></span></a><button type="button" class="button primary close">Fechar</button></div>
 </dialog>
 <div id="toast" role="status" class="toast" hidden></div>
 </body>

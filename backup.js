@@ -27,15 +27,19 @@ export function parseBackup(backup) {
     throw new Error('Selecione o backup JSON exportado pelo painel de prospecção.');
   }
   const contacts = new Map();
+  const validDate = value => value === null || (Number.isFinite(value) && value > 0 && Number.isFinite(new Date(value).getTime()));
+  const latestActivity = record => Math.max(record.sentAt ?? 0, record.welcomedAt ?? 0);
   for (const record of backup.contacts) {
     const name = typeof record?.name === 'string' ? record.name.trim() : '';
     const phone = brazilianPhone(record?.phone);
     const sentAt = record?.sentAt ?? null;
-    if (!name || !phone || (sentAt !== null && (!Number.isFinite(sentAt) || sentAt <= 0 || !Number.isFinite(new Date(sentAt).getTime())))) {
+    const welcomedAt = record?.welcomedAt ?? null;
+    if (!name || !phone || !validDate(sentAt) || !validDate(welcomedAt)) {
       throw new Error('O backup contém um contato ou uma data inválida.');
     }
     const existing = contacts.get(phone);
-    if (!existing || (sentAt ?? 0) > (existing.sentAt ?? 0)) contacts.set(phone, { name, phone, sentAt });
+    const contact = { name, phone, sentAt, welcomedAt };
+    if (!existing || latestActivity(contact) > latestActivity(existing)) contacts.set(phone, contact);
   }
   return [...contacts.values()];
 }

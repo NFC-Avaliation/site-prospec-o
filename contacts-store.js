@@ -1,4 +1,4 @@
-import { APPWRITE_ENDPOINT, APPWRITE_PROJECT_ID, APPWRITE_USER_ID } from './config.js?v=appwrite-1';
+import { APPWRITE_ENDPOINT, APPWRITE_PROJECT_ID, APPWRITE_USER_ID } from './config.js?v=etapas-1';
 
 let account, tables, Query;
 export let configured = false;
@@ -54,10 +54,13 @@ export async function signOut() {
 }
 
 const address = { databaseId: 'prospecca', tableId: '6afa2da80026e5b19f37' };
+const template = { databaseId: address.databaseId, tableId: 'mensagens', rowId: 'personalizada' };
 const pageSize = 100;
+const isoDate = value => value ? new Date(value).toISOString() : null;
 const asContact = row => ({
   phone: row.$id,
   name: row.name,
+  welcomedAt: row.welcomedAt ? Date.parse(row.welcomedAt) : null,
   sentAt: row.sentAt ? Date.parse(row.sentAt) : null
 });
 
@@ -74,12 +77,16 @@ export async function listContacts() {
   }
 }
 
-async function createContact(record) {
+export async function createContact(record) {
   try {
     await tables.createRow({
       ...address,
       rowId: record.phone,
-      data: { name: record.name, sentAt: record.sentAt ? new Date(record.sentAt).toISOString() : null }
+      data: {
+        name: record.name,
+        sentAt: isoDate(record.sentAt),
+        ...(record.welcomedAt ? { welcomedAt: isoDate(record.welcomedAt) } : {})
+      }
     });
     return 1;
   } catch (error) {
@@ -111,11 +118,25 @@ export async function insertContacts(records) {
   return inserted;
 }
 
-export async function changeStatus(phone, sentAt) {
-  const row = await tables.updateRow({
-    ...address,
-    rowId: phone,
-    data: { sentAt: sentAt ? new Date(sentAt).toISOString() : null }
-  });
+export async function changeStatus(phone, stage, time = Date.now()) {
+  const stamp = isoDate(time);
+  const data = stage === 'sent' ? { sentAt: stamp }
+    : stage === 'welcome' ? { welcomedAt: stamp, sentAt: null }
+    : { welcomedAt: null, sentAt: null };
+  const row = await tables.updateRow({ ...address, rowId: phone, data });
   return asContact(row);
+}
+
+export async function readTemplate() {
+  try {
+    const row = await tables.getRow(template);
+    return row.texto ?? '';
+  } catch (error) {
+    if (error.code === 404 && error.type === 'row_not_found') return null;
+    throw error;
+  }
+}
+
+export async function saveTemplate(texto) {
+  await tables.upsertRow({ ...template, data: { texto } });
 }
