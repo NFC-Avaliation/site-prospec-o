@@ -1,5 +1,5 @@
-import { configured, setupMessage, restoreAccount, signIn, signOut, listContacts, insertContacts, createContact, changeStatus, readTemplate, saveTemplate } from './contacts-store.js?v=etapas-1';
-import { parseBackup, readLocalContacts } from './backup.js?v=etapas-1';
+import { configured, setupMessage, restoreAccount, signIn, signOut, listContacts, insertContacts, createContact, changeStatus, readTemplate, saveTemplate, templateErrorMessage } from './contacts-store.js?v=mensagem-2';
+import { parseBackup, readLocalContacts } from './backup.js?v=mensagem-2';
 import { brazilianPhone, contactsFromRows, normalize, readSheet } from './import.js';
 
 const $ = id => document.getElementById(id);
@@ -39,6 +39,7 @@ let draftFiles = [];
 let toastTimer;
 let activeSend = null;
 let cloudText = null;
+let unsyncedMessage = null;
 let templateReady = false;
 const messageText = () => cloudText ?? settings.text;
 const stages = {
@@ -302,10 +303,10 @@ function openEditor() {
     toast('Aguarde o carregamento da mensagem personalizada.');
     return;
   }
-  $('message').value = messageText();
-  draftFiles = [...settings.files];
+  $('message').value = unsyncedMessage?.text ?? messageText();
+  draftFiles = [...(unsyncedMessage?.files ?? settings.files)];
   $('media-input').value = '';
-  feedback('message-feedback', '');
+  feedback('message-feedback', unsyncedMessage ? 'Rascunho neste navegador. Clique em Salvar mensagem para tentar sincronizar.' : '');
   renderDraft();
   $('message-dialog').showModal();
 }
@@ -529,9 +530,20 @@ $('message-form').addEventListener('submit', async event => {
       await saveTemplate(next.text);
       if (version === accountGeneration) cloudText = next.text;
     });
-  } catch {
+  } catch (error) {
     if (version === accountGeneration) {
-      feedback('message-feedback', 'Não foi possível salvar no Appwrite. Confira a tabela mensagens e suas permissões.', true);
+      unsyncedMessage = next;
+      let draftSaved = false;
+      try {
+        await write('message-draft', next);
+        draftSaved = true;
+      } catch {
+        // The form remains open when the browser cannot persist the draft.
+      }
+      if (version === accountGeneration) {
+        feedback('message-feedback', templateErrorMessage(error) +
+          (draftSaved ? ' Rascunho guardado neste navegador.' : ' Copie o texto antes de fechar esta tela.'), true);
+      }
     }
     $('save-message').disabled = false;
     return;
@@ -541,7 +553,9 @@ $('message-form').addEventListener('submit', async event => {
     return;
   }
   settings = next;
+  unsyncedMessage = null;
   try {
+    await write('message-draft', null);
     await write('settings', next);
     if (version === accountGeneration) {
       $('message-dialog').close();
@@ -632,7 +646,9 @@ if (!configured) {
 }
 
 try {
-  settings = await read('settings') ?? settings;
+  const [localSettings, localDraft] = await Promise.all([read('settings'), read('message-draft')]);
+  settings = localSettings ?? settings;
+  unsyncedMessage = localDraft ?? null;
 } catch {
   // The text in Appwrite is available even when local attachment storage is blocked.
 }

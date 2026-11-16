@@ -1,4 +1,4 @@
-import { APPWRITE_ENDPOINT, APPWRITE_PROJECT_ID, APPWRITE_USER_ID } from './config.js?v=etapas-1';
+import { APPWRITE_ENDPOINT, APPWRITE_PROJECT_ID, APPWRITE_USER_ID } from './config.js?v=mensagem-2';
 
 let account, tables, Query;
 export let configured = false;
@@ -138,5 +138,38 @@ export async function readTemplate() {
 }
 
 export async function saveTemplate(texto) {
-  await tables.upsertRow({ ...template, data: { texto } });
+  const entry = { ...template, data: { texto } };
+  try {
+    await tables.updateRow(entry);
+    return;
+  } catch (error) {
+    if (error.code !== 404 || error.type !== 'row_not_found') throw error;
+  }
+
+  try {
+    await tables.createRow(entry);
+  } catch (error) {
+    if (error.code !== 409 || error.type !== 'row_already_exists') throw error;
+    await tables.updateRow(entry);
+  }
+}
+
+export function templateErrorMessage(error) {
+  const code = Number(error?.code);
+  const type = typeof error?.type === 'string' && /^[a-z_]+$/.test(error.type) ? error.type : '';
+  const detail = Number.isInteger(code) && code >= 400 && code <= 599
+    ? ' (' + code + (type ? ' / ' + type : '') + ')' : '';
+  const table = 'Mensagens (ID: ' + template.tableId + ')';
+
+  if (type === 'table_not_found' || type === 'database_not_found') {
+    return 'O Appwrite não encontrou a tabela ' + table + ' no banco Prospecção. Confira o ID cinza ao lado do nome.' + detail + '.';
+  }
+  if (code === 401 || code === 403) {
+    return 'No Appwrite, abra ' + table + ' → Security. Confira se Marcelo tem Create, Read e Update e entre novamente no painel.' + detail;
+  }
+  if (code === 400) {
+    return 'Em ' + table + ' → Columns, confira se texto é do tipo Text, com status Available e Array desmarcado.' + detail;
+  }
+  if (code === 429) return 'O Appwrite limitou as tentativas. Aguarde um minuto e tente novamente.' + detail;
+  return 'Não foi possível salvar no Appwrite. Tente novamente.' + detail;
 }
